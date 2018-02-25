@@ -69,7 +69,7 @@ func (srv *SearchClient) FindUsers(req SearchRequest) (*SearchResponse, error) {
 	searcherParams := url.Values{}
 
 	if req.Limit < 0 {
-		return nil, fmt.Errorf("limit must be > 0")
+		return nil, fmt.Errorf("limit must be > 0") //vit: "must be >=0"?
 	}
 	if req.Limit > 25 {
 		req.Limit = 25

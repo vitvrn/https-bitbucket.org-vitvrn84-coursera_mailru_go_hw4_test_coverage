@@ -6,6 +6,8 @@ package main
 //TODO sort: []*User faster than []User ???
 //TODO case insensitive search ???
 //TODO sort: use clojures ???
+//TODO case(query=="") can be optimized ???
+//TODO refactor repeating into func Test ???
 
 import (
 	"encoding/json"
@@ -19,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type UserData struct {
@@ -82,28 +85,26 @@ type ByNameDesc struct{ Users }
 
 func (s ByNameDesc) Less(i, j int) bool { return s.Users[i].Name > s.Users[j].Name }
 
-//TODO use json.Marshal()
-const jsonStr0 = `[
-	{"Id": "%v", "Name": "%v", "Age": "%v", "About": "%v", "Gender": "%v"},
-]`
+const (
+	testAccessTokenGood = "1234"
+	testAccessTokenBad  = ""
+)
 
-//TODO
-// 0) auth(atoken)
-// 1) query
-// 2) sort(order_field, order_by)
-// 3) slice(offset, limit)
+func accessTokenOk(token string) bool {
+	return token == testAccessTokenGood
+}
+
+//=============================================================================
+//=============================================================================
 func SearchServer(w http.ResponseWriter, r *http.Request) {
-	//- authorization(atoken) --------------------------------------------------
-	//fmt.Println(r.Header)
+	// authorization(atoken)
 	atoken := r.Header.Get("AccessToken")
 	fmt.Println("-- atoken", atoken)
-	if atoken != "1234" {
+	if !accessTokenOk(atoken) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	//--------------------------------------------------------------------------
 
-	// empty result: ?TODO don't process explicitly?
 	limit, err := strconv.Atoi(r.FormValue("limit"))
 	fmt.Println("-- limit:", limit)
 	if err != nil || limit < 0 { //TODO ??? combine StatusBadRequest-conditions ???
@@ -119,23 +120,37 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := r.FormValue("query")
-	fmt.Println("-- query:", query)
-	//TODO ??? check
+	fmt.Println("-- query:", query) //TODO ??? check
 
 	order_field := r.FormValue("order_field")
 	fmt.Println("-- order_field:", order_field)
 	if order_field != "" && order_field != "Id" && order_field != "Age" && order_field != "Name" { //TODO check later by switch/case?
+		errorResp := SearchErrorResponse{Error: "ErrorBadOrderField"}
+		errorRespjson, err := json.Marshal(&errorResp) //& ???
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError) //panic?
+			return
+		}
 		w.WriteHeader(http.StatusBadRequest)
+		w.Write(errorRespjson)
 		return
 	}
 
 	order_by, err := strconv.Atoi(r.FormValue("order_by"))
 	fmt.Println("-- order_by:", order_by)
 	if err != nil || order_by < -1 || order_by > 1 {
+		errorResp := SearchErrorResponse{Error: "ErrorBadOrderBy"}
+		errorRespjson, err := json.Marshal(&errorResp) //& ???
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError) //panic?
+			return
+		}
 		w.WriteHeader(http.StatusBadRequest)
+		w.Write(errorRespjson)
 		return
 	}
 
+	// loading data
 	xmlData, err := ioutil.ReadFile("dataset.xml")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError) //???
@@ -144,10 +159,7 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 
 	usersData := new(UsersData)
 	xml.Unmarshal(xmlData, &usersData)
-	//	fmt.Println("=== 1st client:", usersData.List[0])
-	//	fmt.Println("=== 2nd client:", usersData.List[1])
 
-	//TODO query=="" -> can be optimized ???
 	users := Users{} //TODO make(capacity>0) ???
 	for _, ud := range usersData.List {
 		if query == "" || strings.Contains(ud.FirstName, query) || strings.Contains(ud.LastName, query) || strings.Contains(ud.About, query) {
@@ -189,21 +201,6 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 		users = users[offset:limit]
 	}
 
-	//	users := []User{
-	//		User{
-	//			Id:     0,
-	//			Name:   "John Johnson",
-	//			Age:    33,
-	//			About:  "Lorem ipsum",
-	//			Gender: "male",
-	//		},
-	//	}
-	//	users := []User{}
-
-	for _, u := range users {
-		fmt.Println("-u-", u)
-	}
-
 	usersJSON, err := json.Marshal(users)
 	if err == nil {
 		fmt.Println("-=-", string(usersJSON))
@@ -211,13 +208,38 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestFindUsers(t *testing.T) {
-	//TODO init...
+//=============================================================================
+//=============================================================================
+
+//waits for timeout to happen
+func TimeoutServer(w http.ResponseWriter, r *http.Request) {
+	time.Sleep(1001 * time.Millisecond)
+}
+
+func InternalErrorServer(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusInternalServerError)
+}
+
+func BadErrorJsonServer(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusBadRequest)
+	w.Write([]byte("[")) //error JSON
+}
+
+func BadResultJsonServer(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("[")) //error JSON
+}
+
+//=============================================================================
+/*
+func _TestFindUsers(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
 	cases := []TestCase{
 		TestCase{
 			SClient: &SearchClient{
-				AccessToken: "1234",
-				//URL:         "http://127.0.0.1:8080",
+				AccessToken: testAccessTokenGood,
+				URL:         ts.URL,
 			},
 			SRequest: SearchRequest{
 				Limit:      26, //0 //1 //26
@@ -242,23 +264,271 @@ func TestFindUsers(t *testing.T) {
 		},
 	}
 
-	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
-	defer ts.Close()
-
 	var result TestResult
 	for caseNum, item := range cases {
-		item.SClient.URL = ts.URL //!!! ??? TODO vary for coverage ???
 		result.response, result.err = item.SClient.FindUsers(item.SRequest)
 
 		if !reflect.DeepEqual(item.Result, result) {
-			t.Errorf("[%d] wrong result, expected (%#v, %#v), got (%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
 		}
+	}
+}
+*/
 
-		//		if !reflect.DeepEqual(item.Result.response, result.response) {
-		//			t.Errorf("[%d] wrong result, expected %#v, got %#v", caseNum, item.Result.response, result.response)
-		//		}
-		//		if !reflect.DeepEqual(item.Result.err, result.err) {
-		//			t.Errorf("[%d] wrong result, expected %#v, got %#v", caseNum, item.Result.err, result.err)
-		//		}
+//=============================================================================
+// this tests don't need SearchServer:
+//limit<0, limit>25
+//offset<0
+func TestFindUsersErrors1(t *testing.T) {
+	cases := []TestCase{
+		TestCase{ //limit<0
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+			},
+			SRequest: SearchRequest{
+				Limit: -1,
+			},
+			Result: TestResult{
+				err: fmt.Errorf("limit must be > 0"),
+			},
+		},
+		TestCase{ //offset<0
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+			},
+			SRequest: SearchRequest{
+				Offset: -1,
+			},
+			Result: TestResult{
+				err: fmt.Errorf("offset must be > 0"),
+			},
+		},
+		TestCase{ //limit>25 (,offset<0)
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+			},
+			SRequest: SearchRequest{
+				Limit:  26,
+				Offset: -1,
+			},
+			Result: TestResult{
+				err: fmt.Errorf("offset must be > 0"),
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
+	}
+}
+
+//=============================================================================
+//T(err) == net.Error, err.Timeout() == true
+func TestFindUsersErrorTimeout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(TimeoutServer))
+	defer ts.Close()
+
+	cases := []TestCase{
+		TestCase{
+			SClient: &SearchClient{
+				URL: ts.URL,
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("timeout for limit=1&offset=0&order_by=0&order_field=&query="),
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
+	}
+}
+
+//=============================================================================
+//internal SearchServer error
+func TestFindUsersInternalServerError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(InternalErrorServer))
+	defer ts.Close()
+
+	cases := []TestCase{
+		TestCase{
+			SClient: &SearchClient{
+				URL: ts.URL,
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("SearchServer fatal error"),
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
+	}
+}
+
+//=============================================================================
+//BadRequest: internal server error bad error JSON
+func TestFindUsersInternalServerErrorBadErrorJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(BadErrorJsonServer))
+	defer ts.Close()
+
+	cases := []TestCase{
+		TestCase{
+			SClient: &SearchClient{
+				URL: ts.URL,
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("cant unpack error json: unexpected end of JSON input"),
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
+	}
+}
+
+//=============================================================================
+//StatusOK: bad result JSON
+func TestFindUsersInternalServerErrorBadResultJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(BadResultJsonServer))
+	defer ts.Close()
+
+	cases := []TestCase{
+		TestCase{
+			SClient: &SearchClient{
+				URL: ts.URL,
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("cant unpack result json: unexpected end of JSON input"),
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
+	}
+}
+
+//=============================================================================
+//unauthorized
+//BadRequest: bad order field
+//BadRequest: bad order by
+//len(data)==req.Limit
+func TestFindUsersErrors2(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	cases := []TestCase{ //unauthorized
+		TestCase{
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenBad,
+				URL:         ts.URL,
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("Bad AccessToken"),
+			},
+		},
+		TestCase{ //BadRequest: bad order field
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+				URL:         ts.URL,
+			},
+			SRequest: SearchRequest{
+				OrderField: "Gender",
+			},
+			Result: TestResult{
+				err: fmt.Errorf("OrderFeld Gender invalid"),
+			},
+		},
+		TestCase{ //BadRequest: bad OrderBy
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+				URL:         ts.URL,
+			},
+			SRequest: SearchRequest{
+				OrderBy: 2,
+			},
+			Result: TestResult{
+				err: fmt.Errorf("unknown bad request error: ErrorBadOrderBy"),
+			},
+		},
+		TestCase{ //len(data)==req.Limit
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+				URL:         ts.URL,
+			},
+			SRequest: SearchRequest{
+				Query: "Wolf", //Limit: 0
+			},
+			Result: TestResult{
+				response: &SearchResponse{
+					Users:    []User{},
+					NextPage: true,
+				},
+			},
+		},
+		TestCase{ //len(data)!=req.Limit
+			SClient: &SearchClient{
+				AccessToken: testAccessTokenGood,
+				URL:         ts.URL,
+			},
+			SRequest: SearchRequest{
+				Limit: 1,
+				Query: "Wolf",
+			},
+			Result: TestResult{
+				response: &SearchResponse{
+					Users: []User{
+						User{
+							Id:     0,
+							Name:   "Boyd Wolf",
+							Age:    22,
+							About:  "Nulla cillum enim voluptate consequat laborum esse excepteur occaecat commodo nostrud excepteur ut cupidatat. Occaecat minim incididunt ut proident ad sint nostrud ad laborum sint pariatur. Ut nulla commodo dolore officia. Consequat anim eiusmod amet commodo eiusmod deserunt culpa. Ea sit dolore nostrud cillum proident nisi mollit est Lorem pariatur. Lorem aute officia deserunt dolor nisi aliqua consequat nulla nostrud ipsum irure id deserunt dolore. Minim reprehenderit nulla exercitation labore ipsum.\n",
+							Gender: "male",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var result TestResult
+	for caseNum, item := range cases {
+		result.response, result.err = item.SClient.FindUsers(item.SRequest)
+
+		if !reflect.DeepEqual(item.Result, result) {
+			t.Errorf("\n[%d] wrong result, expected \n(%#v, %#v) \ngot \n(%#v, %#v)", caseNum, item.Result.response, item.Result.err, result.response, result.err)
+		}
 	}
 }

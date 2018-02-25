@@ -279,6 +279,7 @@ func _TestFindUsers(t *testing.T) {
 // this tests don't need SearchServer:
 //limit<0, limit>25
 //offset<0
+//unknown eror (invalid URL)
 func TestFindUsersErrors1(t *testing.T) {
 	cases := []TestCase{
 		TestCase{ //limit<0
@@ -313,6 +314,15 @@ func TestFindUsersErrors1(t *testing.T) {
 			},
 			Result: TestResult{
 				err: fmt.Errorf("offset must be > 0"),
+			},
+		},
+		TestCase{
+			SClient: &SearchClient{
+				URL: "1",
+			},
+			SRequest: SearchRequest{},
+			Result: TestResult{
+				err: fmt.Errorf("unknown error Get 1?limit=1&offset=0&order_by=0&order_field=&query=: unsupported protocol scheme \"\""), //??????
 			},
 		},
 	}
